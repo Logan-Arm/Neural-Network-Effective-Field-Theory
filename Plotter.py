@@ -199,15 +199,15 @@ class Plotter:
         Trial_Recorders_Model file.  Also plots the uncertainty, the training points, and the true values."""
         x_vals = (self.trial.x_test.squeeze() * (4/3)*m.pi).numpy()
         x_train_vals = (self.trial.x_train.squeeze() * (4/3)*m.pi).numpy()
-        for k in range(self.data.ensemble_perf.shape[0]):
+        for k in range(self.data.ens_avg_perf.shape[0]):
             epoch_value = self.performance_times[k]
             fig, ax = plt.subplots(figsize= (10,6))
-            ax.plot(x_vals, self.data.ensemble_perf[k,:], label = f'Predicted Values')
+            ax.plot(x_vals, self.data.ens_avg_perf[k,:], label = f'Predicted Values')
             ax.plot(x_vals,self.trial.y_test.numpy(), label = f'True Values')
             # plt.scatter(self.x_train,self.y_train,label = "Training points")
             ax.scatter(x_train_vals, self.trial.y_train, label="Training points")
-            ax.fill_between(x_vals, self.data.ensemble_perf[k,:]+self.data.ensemble_perf_uncert[k,:],
-                             self.data.ensemble_perf[k,:]-self.data.ensemble_perf_uncert[k,:],color = 'blue', alpha = 0.3)
+            ax.fill_between(x_vals, self.data.ens_avg_perf[k,:]+self.data.ens_perf_uncert[k,:],
+                             self.data.ens_avg_perf[k,:]-self.data.ens_perf_uncert[k,:],color = 'blue', alpha = 0.3)
             #plt.fill_between is finicky, needs inputs to be explicitly 1 dimensional, hence the X_test_sorted.squeeze().numpy()
             ax.set_xlabel(f'X')
             ax.set_ylabel(f'Y')
