@@ -8,6 +8,9 @@ from torch.func import jacrev, vmap, functional_call
 import networkx as nx
 from collections import deque
 import logging
+import h5py
+from pathlib import Path
+
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +78,6 @@ def criterion(y_pred, y_true):
      although ultimately as this is "experimental", it is not strictly required. """
     #mean squared loss is simply (predicted-actual)^2
     return 0.5* torch.mean((y_pred-y_true)**2)
-
-
-
-
 
 class MultiLayerNet(nn.Module): #nn.module is the base class for all neural networks in pytorch
     """The outline of the MLP which will be passed to the trial class.  The MLP is designed with input and output layers of size specified by the function
@@ -156,7 +155,6 @@ class MultiLayerNet(nn.Module): #nn.module is the base class for all neural netw
 
         return y_pred
     
-
 class LossRecorder():
     """In loop helper class for the trial class, meant to record the loss values and the epoch of recording"""
     def __init__(self,record_start = 0, loss_points = None, convergence_criteria = 0.01):
@@ -171,23 +169,24 @@ class LossRecorder():
         self.convergence_tracker = []
 
     def loss_track_in_loop(self,epoch,loss,j):
-        if (epoch >= self.record_start) or (self.loss_points is not None and epoch in self.loss_points):
-            self.inst_loss.append(loss)
+        """In track loss recording procedure.  I have gone away with the selective loss point calculations.  Now that file storing 
+        is implemented, and there is no longer any memory pressure, it is more convenient and arguably better practice to store the 
+        whole of the loss data, and then filter it later if desired."""
+
+        # if (epoch >= self.record_start) or (self.loss_points is not None and epoch in self.loss_points):
+        #     self.inst_loss.append(loss)
+        
+        self.inst_loss.append(loss)
         if j ==0:
             self.recorded_epochs.append(epoch)
-
+    
     def loss_end_of_loop(self):
-        """Append the replica's loss to the set, and then clear the instant loss to be used further later"""
-        self.ensemble_loss.append(self.inst_loss)
-
         #convergence check
         converged = any(loss <= self.convergence_criteria for loss in self.inst_loss)
         self.convergence_tracker.append(converged)
-        
         self.inst_loss = []
-    def to_numpy(self):
-        self.ensemble_loss = np.array(self.ensemble_loss)
-    
+
+
 class PlateauRecorder():
     """In loop tracker of the loss shape, identifies when the replica's begin their plateau phase.  A key note is that this records raw epochs, not training time,
     any comparison with inverse eigenvalues etc must therefore be modified by the learning rate."""
@@ -220,9 +219,6 @@ class PlateauRecorder():
 
         #loss values are recorded very epoch, so there is no need to consider any alignment int etc
         self.max_len = max(2,int(round(window/lr)))
-
-        self.update_lr = lambda : None #making a dummy function similar to how the hooks work in the other recorders
-
         
         self.loss_deck = deque(maxlen=self.max_len) #Create a deque of size of window in epochs to store the slopes at given points
         self.epoch_deck = deque(maxlen=self.max_len)
@@ -312,14 +308,6 @@ class PlateauRecorder():
         self.epoch_deck.clear()
         self.loss_deck.clear()
 
-    def convert_to_numpy(self):
-        self.plateau_bounds = np.array(self.plateau_bounds)
-        #Dim is [replica, 2], second dimensionality is list of [plat_start, plat_end]
-
-    def bind_update_lr_funct(self, update_lr_fn = None):
-        """Function to bind the update lr function which will be passed from the trial class into the PlateauRecorder"""
-        self.update_lr = update_lr_fn
-
 class NTKRecorder():
     """All calculated vectors should be based off the ensemble average NTK, not necessarily the ensemble average of replica's data"""
 
@@ -346,9 +334,6 @@ class NTKRecorder():
         self.ensemble_output = []
         self.ensemble_NTK=[]
         
-
-
-
     def bind_hook_fn(self,add_hooks_fn =None, remove_hooks_fn = None):
         self.add_hooks_fn = add_hooks_fn
         self.remove_hooks_fn = remove_hooks_fn
@@ -379,7 +364,6 @@ class NTKRecorder():
             self.capture_output(model,train_data)        
             self.add_hooks_fn()
 
-
     def capture_output(self, model, train_data):
         model.eval()
         with torch.no_grad():
@@ -389,26 +373,13 @@ class NTKRecorder():
             ############################################### 
         self.inst_output.append(predictions)
     
-
     def NTK_end_of_loop(self):
-        self.ensemble_output.append(self.inst_output)
-        self.ensemble_NTK.append(self.inst_NTK)
+        # self.ensemble_output.append(self.inst_output)
+        # self.ensemble_NTK.append(self.inst_NTK)
         
         self.inst_output = []
         self.inst_NTK = []
-
-    def NTK_conversion(self):
-        """Calculates the rotation of the eigenvectors as well as converts everything to a numpy array"""
-
-        self.initial_NTK = np.array(self.initial_NTK)
-
-        self.ensemble_NTK = np.array(self.ensemble_NTK)
-        #[replica, epoch, NTK]
-
-        self.ensemble_output = np.array(self.ensemble_output)
-
-        self.initial_evals = np.array(self.initial_evals)
-                  
+              
 class ParameterRecorder():
     """Class meant to view and store all the parameters of neurons in a replica
     Note, shares the same alignmentint as the NTK recorder, thus can just use NTK recorded epochs for any further calculations/plots
@@ -477,14 +448,6 @@ class ParameterRecorder():
         self.replica_weights = {i:[] for i in range(self.numlayer) }
         self.replica_bias = {i:[] for i in range(self.numlayer) }
 
-    def convert_to_numpy(self):
-        """Dimensionality of the ensemble weights array is as following:
-        [layer][replica][epoch][weight tensor (see comment under the track in loop function)]"""
-        for i in range(len(self.ensemble_weights)):
-            self.ensemble_weights[i] = np.array(self.ensemble_weights[i])
-            self.ensemble_biases[i] =np.array(self.ensemble_biases[i])
-            #Biases I expect to be of shape [layer][replica][epoch][width]
-
 class PerformanceRecorder():
     """Helper function which records the model's output (performance) at various times (epochs also recorded) """
     def __init__(self,X_test, performance_times,epochs,performance_count = 10):
@@ -498,7 +461,7 @@ class PerformanceRecorder():
             snapshots_initial = np.unique(np.geomspace(1, cutoff, int(performance_count/2)).astype(int))
             snapshots_final = np.unique(np.geomspace(cutoff, epochs-1, int(performance_count/2)).astype(int))
 
-            self.snapshot_array = np.unique(np.concat(snapshots_initial,snapshots_final))
+            self.snapshot_array = np.unique(np.concatenate((snapshots_initial, snapshots_final)))
 
 
 
@@ -516,7 +479,6 @@ class PerformanceRecorder():
         self.add_hooks_fn = lambda:None
         self.remove_hooks_fn =lambda:None
         
-
     def bind_hook_fn(self,add_hooks_fn =None, remove_hooks_fn = None):
         """Same ideas the NTK version"""
         self.add_hooks_fn = add_hooks_fn
@@ -538,17 +500,12 @@ class PerformanceRecorder():
             model.train()
     
     def after_loop(self):
-        self.performances.append(self.inst_performs)
-
         self.inst_performs = []
-
-    def convert_numpy(self):
-        self.performances = np.array(self.performances)
 
 class Trial():
     def __init__(self, model_fn, input,output,width, depth,lr,epochs,STD,ensemblenum,
                  alignmentint,x_train,y_train,x_test,y_test, eval_amount,
-                 performance_times, lr_factor =2):
+                 performance_times, save_data_dir):
         
         self.model_fn = model_fn
         """This is what we will use to instantiate the model at each relevant time"""
@@ -564,8 +521,10 @@ class Trial():
         self.y_train = y_train
         self.x_test = x_test
         self.y_test = y_test
-        self.numlayer = self.depth+1
-        self.lr_factor =lr_factor
+        self.numlayer = self.depth+1        
+        self.save_data_dir = Path(save_data_dir)
+        self.save_data_dir.mkdir(parents = True, exist_ok = True)
+        self.h5_path = self.save_data_dir/"run_data.h5"
 
         self.ensemble_derivs = {i:[] for i in range(self.numlayer)}
 
@@ -591,23 +550,190 @@ class Trial():
 
 
         self.ntk_recorder = NTKRecorder(alignmentint,e_amount=eval_amount)
+        self.alignmentint = alignmentint
 
         self.loss_recorder = LossRecorder()
 
         self.performance_recorder = PerformanceRecorder(self.x_test, performance_times,epochs)
 
-        self.parameter_recorder = ParameterRecorder(self.numlayer,alignmentint)
+        # self.parameter_recorder = ParameterRecorder(self.numlayer,alignmentint)
 
         self.plateau_recorder = PlateauRecorder(lr = self.lr)
 
+    def create_h5_file(self):
+        """Creating an h5 file to store all the run data as runs progress.  The standard name of the h5 file will just be run_data.h5,
+        however this of course could be updated if desired.  The initial structure of the h5 file must be created at initialisation to
+        avoid rather large computation spikes later on in adjusting the dataset.  This is not very difficult, but it does mean that there 
+        is potential for array disalignment under specific circumstances (although I do not believe this to be likely)."""
 
-    def trial_update_lr(self,optimiser):
-        new_lr = self.lr * self.lr_factor
-        optimiser.param_groups[0]['lr'] = new_lr
-        logger.info("Learning rate has been updated")
-        logger.debug("New learning rate is %f ",optimiser.param_groups[0]['lr'])
+        snapshot_counts = len(self.performance_recorder.snapshot_array)
+        num_measures = len(range(0,self.epochs,self.alignmentint))
+        n_train = len(self.x_train)
+        n_test = len(self.x_test)
 
-    
+        widths = [self.width] * self.depth + [self.output] # results in [10,10,10,1] for width 10, depth 3 and output 1
+
+
+
+        with h5py.File(name = self.h5_path, mode = 'w') as f:
+            
+            """The following block will create a dataset for the loss data.  Note, I have only made it 1 dimensional in terms of the value
+            as this code is only configured to calculate and store 1 loss (the training loss).  If further losses are required, simply add in
+            another dimensionality with the corresponding amount of losses desired to the shape of the ensemble.  Further (minor) configuration
+            to the saving process will also be required"""
+            f.loss_group = f.create_group(name = "loss")
+            f.loss_dataset = f.loss_group.create_dataset(name = "loss_dataset", shape = (self.ensemble,self.epochs),
+                                                         dtype='f8', fillvalue = np.nan)
+            #Creates a dataset of shape [N,epochs]
+            f.loss_dataset.attrs["Description"] = "A dataset that stores all the replica's loss information at each recorded epoch"
+
+
+            """The following block creates a dataset for the performance (output) of the model.  Like with loss, this code is only configured
+            to have a single output, the model's predictions of the input data.  If, however, there are multiple outputs, (as would be the case 
+            if there are multiple inputs and outputs), tweaking of this structure would be required."""
+            f.performance_group = f.create_group(name = "performance")
+            #Note, I have added performance_times as an object variable as well, just to allow for a specified amount 
+            f.performance_dataset = f.performance_group.create_dataset(name = "performance_dataset", shape = (self.ensemble,snapshot_counts,n_test),
+                                                                       dtype='f8', fillvalue = np.nan)
+            f.performance_dataset.attrs["Description"] = "An h5 dataset that stores the output of the model at select times across training, for each replica"
+
+
+            """Following block is for NTK storage.  I don't know how NTK calculation would vary for different run parameters, so this should
+            be constant along all cases"""
+            f.ntk_group = f.create_group(name = "ntk")
+            f.ntk_dataset = f.ntk_group.create_dataset(name = "ntk_dataset", shape = (self.ensemble,num_measures,n_train,n_train),
+                                                       dtype='f8', fillvalue = np.nan)
+            f.ntk_dataset.attrs["Description"] = "An h5 array to store NTK data at alignmentint epoch.  Dimensionality of array is as follows: " \
+            "[Replica,Epoch,alpha,alpha] where alpha is length of input/training vector"
+
+            """Following block is for plateau recording.  A similar structure could be utilized for any sort of training phase analysis"""
+            f.plateau_group = f.create_group(name = "plateau")
+            f.plateau_dataset = f.plateau_group.create_dataset(name = "plateau_dataset", shape = (self.ensemble,2),
+                                                               dtype='f8', fillvalue = np.nan)
+            f.plateau_dataset.attrs["Description"] = "H5 array stores the recorded beginning and end of the plateau phase of training"
+
+            """Following block is for the activation history"""
+            for i, w in enumerate(widths):
+                f.create_dataset(name = f"pre_activations/layer_{i}", shape = (self.ensemble,self.epochs,w),
+                                 dtype='f8', fillvalue = np.nan)
+                f.create_dataset(name = f"pre_activations_derivs/layer_{i}", shape = (self.ensemble,self.epochs-1,w),
+                                 dtype='f8', fillvalue = np.nan)
+            
+
+            """I have omitted a block for the parameter recorders.  I do not believe any ongoing research requires the parameters to be 
+            actively recorded, and since the most immediate fix is data storage and resolving memory issues (and storing parameters would 
+            increase storage space by quite a bit, as well as put a fair load on the memory unless consistently written to file which would
+            slow training), I do not think there is any need to record them currently.  
+            
+            There are some implications as a result of this, if the program aborts (be it from memory or keyboard command), whatever ongoing replica's
+            data will be lost.  I do not think this is in it of itself a huge problem, ensemble sizes should be large enough such that one replica is 
+            not critical to the end result; furthermore ensemble training can still continue from the stored data, so the experiment as a whole would 
+            not be hugely impacted.  
+
+            If however one wanted to store the parameters during training, such that even if the program was interrupted, training could resume starting 
+            from the epoch directly prior to program failure, I will provide a skeleton file structure, although this will not be referenced further on
+            in the file or in the saving procedure.
+
+            #input layer
+            f.input_params_w_group = f.create_group(name ="input_params_w")
+            f.input_params_w_dataset = f.input_w_params_group.create_dataset(name ="input_params_w_dataset", shape = (self.width,1))
+            f.input_params_b_group = f.create_group(name ="input_params_b")
+            f.input_params_b_dataset = f.input_params_b_group.create_dataset(name ="input_params_b_dataset", shape = (self.width))
+
+            
+
+            #hidden layers
+            f.hidden_params_w_group = f.create_group(name ="hidden_params_w")
+            f.hidden_params_w_dataset = f.hidden_params_w_group.create_dataset(name = f"hidden_params_w_dataset",
+            shape = (self.width,self.width))
+
+            f.hidden_params_b_group = f.create_group(name ="hidden_params_b")
+            f.hidden_params_b_dataset = f.hidden_params_b_group.create_dataset(name = f"hidden_params_b_dataset",
+            shape = (self.width))
+
+            This structure should be followed for the output layer as well, although I do not think it would be helpful to add to 
+            this example any further
+
+            """
+
+    def open_h5(self,mode = 'r+'):
+        """Function to reopen the h5 file for whenever we want to store data in it
+        The default mode to open the file in is r+, which is just for general writing without 
+        overwriting configuration data.  This mode has been selected as it ensures the file exists
+        (will throw an error otherwise) 
+        
+        """
+        if not self.h5_path.exists():
+            raise FileNotFoundError(f"{self.h5_path} file does not exist, create_h5_file must be called before open_h5 file")
+        return h5py.File(self.h5_path,mode)
+
+    def write_to_h5(self, ensemble_iter,activation_history):
+        """Writes data from the current replica (which corresponds to the ensemble iter value)
+        to the h5 file accordingly.  Does so by simply taking the values recorded across the training
+        by the various parameter recorder values."""
+        with self.open_h5() as f:
+            #fill the loss
+            f["loss/loss_dataset"][ensemble_iter,:] = np.asarray(self.loss_recorder.inst_loss)
+            #fill the performance/output
+            f["performance/performance_dataset"][ensemble_iter,:,:] = np.array(self.performance_recorder.inst_performs)
+            #Fill the NTK values
+            f["ntk/ntk_dataset"][ensemble_iter,:,:,:] = np.array(self.ntk_recorder.inst_NTK)
+            #Fill plateau values
+            f["plateau/plateau_dataset"][ensemble_iter,:] = self.plateau_recorder.plateau_bounds[-1]
+
+            for i in range(self.numlayer):
+                """This functionality was taken directly from the activation_history_func from previous implementations.
+                This function is now removed, as it has been made redundant, however I thought the comments explaining 
+                the dimensionality is helpful 
+                
+                NOTE: I did change the stored value of the derivative to be the average of the derivative over all training 
+                points. This mirrors the structure of the data stored for the pre-activations themselves.  I do not expect
+                this to cause any problems.
+                """
+                stacked = torch.stack(activation_history[i]).numpy() #Converts it to a numpy array
+                #above has the following dimensionality: [epochs, batch (or data point), neuron]
+                #axis 0 = epochs
+                #axis 1 = batch/data
+                #axis 2 = neuron
+
+                logger.debug("Layer %d stacked has shape %s",i, stacked.shape)
+                logger.debug("Layer %d's phi values have been stacked",i)
+
+                stacked_batch = np.mean(np.abs(stacked),axis = 1)
+                logger.debug("Dimensionality of the stacked_batch is %s ",stacked_batch.shape)
+                f[f"pre_activations/layer_{i}"][ensemble_iter,:,:] = stacked_batch
+                #Dimensionality of the phi array is [layer][replica][epoch,neuron]
+
+                time_deriv = np.diff(stacked, 1, 0) #Takes first derivative along the epoch axis
+                logger.debug('time_deriv shape: %s',time_deriv.shape) #Sanity check
+                #New dimensionality would be the following:
+                #[layer] [ensemble_num, epoch-1 (since taken derivative), batch, neuron]
+                #Now need to take the batch mean of this 
+                stacked_deriv = np.mean(np.abs(time_deriv),axis = 1)
+                f[f"pre_activations_derivs/layer_{i}"][ensemble_iter,:,:] = stacked_deriv
+
+    def save_initial_params(self,seed):
+        """A function to save the initial parameters of the run.  The saved parameters are intended to be used to resume a program run
+        in the event there is an unexpected program exit.  As such, values like the learning rate, train and test data, random seed,
+        standard deviation of initialisation,width, depth, and number of layers are saved"""
+
+        params_dict = {'lr':self.lr,
+                       'seed':seed,
+                       'train_input':self.x_train.squeeze().tolist(),
+                       'train_truth': self.y_train.squeeze().tolist(),
+                       'test_input': self.x_test.squeeze().tolist(),
+                       'test_truth': self.y_test.squeeze().tolist(),
+                       'std': self.std,
+                       'width':self.width,
+                       'depth':self.depth,
+                       'input_size': self.input,
+                       'output_size': self.output,
+                       }
+        params_df = pd.DataFrame([params_dict])
+        params_file = self.save_data_dir / "simulation_parameters.csv"
+        params_df.to_csv(params_file, index=False)
+        print(f"Saved simulation parameters to {params_file}")
+
     def training_loop(self,j):
         """Order of training should be 
         NTK calculations
@@ -616,7 +742,6 @@ class Trial():
         Performance Recorder
         
         """
-
         """Creates the model, this needs to be done in loop, as opposed to simply passing a model, such that we actually run our experiment over the different 
         initialisation shapes"""
         self.model = self.model_fn()
@@ -652,28 +777,12 @@ class Trial():
         """Note on gradient descent... since we are using the full batch of data, this is actually a regular gradient descent not stoichastic 
         i.e., no random sampling"""
 
-##############################################################################################
-        """This is the section responsible for the updating of the learning rate, if ever wants to be turned off comment out the binding function"""
-
-        # self.plateau_recorder.bind_update_lr_funct(update_lr_fn= lambda :self.trial_update_lr(optimiser))
-        # print("printing param groups")
-        # print(optimiser.param_groups)
-
-        # print(f"The length of param_groups is {len(optimiser.param_groups)}")
-        # print(type(optimiser.param_groups[0]))
-        # print(optimiser.param_groups[0].keys())
-        # for groups in optimiser.param_groups:
-        #     print(f"The learning rate is {groups['lr']}")
-##############################################################################################
-
-
-
         """Training the model"""
         for epoch in range(self.epochs):
             self.ntk_recorder.NTK_track_in_loop(self.model,self.x_train,self.y_train.numpy(),epoch,j,self.norm_const)
 
             """Start of training loop"""
-            self.parameter_recorder.track_in_loop(epoch,self.model)
+            # self.parameter_recorder.track_in_loop(epoch,self.model)
 
             if j == 0:
                 self.recorded_epochs_activation.append(epoch)
@@ -689,54 +798,21 @@ class Trial():
 
             """End of training loop"""
 
+
+        self.plateau_recorder.end_of_loop()
+        """Plateau recorder is unique, the amount of data we store here in general is quite low, thus the list is never cleared
+        and so we need to call its end of loop function before we continue with file storage
+        """
+        self.write_to_h5(ensemble_iter=j,activation_history = activation_history)
+
         self.ntk_recorder.NTK_end_of_loop()
         self.loss_recorder.loss_end_of_loop()
         self.performance_recorder.after_loop()
-        self.parameter_recorder.end_of_loop()
-        self.plateau_recorder.end_of_loop()
-
-        self.activation_history_func(activation_history)
-
-    def activation_history_func(self, activation_history):
-        """Function which handles appending and reorganising the activation history function
-        Stacks each activation history array on top of one another, then appends both the batch mean and time derivative to appropriate Trial class arrays
-        """
-
-        for i in range(self.numlayer):
-            """Calculating the pre-activation derivative from the hooks' data"""
-            self.stacked = torch.stack(activation_history[i]).numpy() #Converts it to a numpy array
-            #above has the following dimensionality: [epochs, batch (or data point), neuron]
-            #axis 0 = epochs
-            #axis 1 = batch/data
-            #axis 2 = neuron
-
-            logger.debug("Layer %d stacked has shape %s",i, self.stacked.shape)
-            logger.debug("Layer %d's phi values have been stacked",i)
-
-            self.stacked_batch = np.mean(np.abs(self.stacked),axis = 1)
-            logger.debug("Dimensionality of the stacked_batch is %s ",self.stacked_batch.shape)
-            self.phi[i].append(self.stacked_batch)
-            #Dimensionality of the phi array is [layer][replica][epoch,neuron]
-
-            time_deriv = np.diff(self.stacked, 1, 0) #Takes first derivative along the epoch axis
-            logger.debug('time_deriv shape: %s',time_deriv.shape) #Sanity check
-            self.ensemble_derivs[i].append(time_deriv)
-            #appends the layer information to the corresponding layer list in the ensemble_derivs dictionary
-            #New dimensionality would be the following:
-            #[layer] [ensemble_num, epoch-1 (since taken derivative), batch, neuron]
+        # self.parameter_recorder.end_of_loop()
 
     def train_ensemble(self):
         """Full standard training loop, meant to make running a trial easier"""
+        self.create_h5_file()
         for j in range(self.ensemble):
             self.training_loop(j)
             logger.info("Done with replica %d", j)
-
-        self.ntk_recorder.NTK_conversion()
-        self.loss_recorder.to_numpy()
-        self.performance_recorder.convert_numpy()
-        self.parameter_recorder.convert_to_numpy()
-        self.plateau_recorder.convert_to_numpy()
-        logger.info("Dimensionality of the performances array is %s ",self.performance_recorder.performances.shape)
-        # self.phi = np.array(self.phi)
-        for i in range(self.numlayer):
-            self.phi[i] = np.array(self.phi[i]) #just converting it to dictionary of numpy arrays
