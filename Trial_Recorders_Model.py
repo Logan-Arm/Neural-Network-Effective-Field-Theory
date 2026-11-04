@@ -587,7 +587,6 @@ class Trial():
             #Creates a dataset of shape [N,epochs]
             f.loss_dataset.attrs["Description"] = "A dataset that stores all the replica's loss information at each recorded epoch"
 
-
             """The following block creates a dataset for the performance (output) of the model.  Like with loss, this code is only configured
             to have a single output, the model's predictions of the input data.  If, however, there are multiple outputs, (as would be the case 
             if there are multiple inputs and outputs), tweaking of this structure would be required."""
@@ -596,7 +595,7 @@ class Trial():
             f.performance_dataset = f.performance_group.create_dataset(name = "performance_dataset", shape = (self.ensemble,snapshot_counts,n_test),
                                                                        dtype='f8', fillvalue = np.nan)
             f.performance_dataset.attrs["Description"] = "An h5 dataset that stores the output of the model at select times across training, for each replica"
-
+            f.performance_dataset.attrs["Snapshot_Array"] = self.performance_recorder.snapshot_array
 
             """Following block is for NTK storage.  I don't know how NTK calculation would vary for different run parameters, so this should
             be constant along all cases"""
@@ -728,6 +727,9 @@ class Trial():
                        'depth':self.depth,
                        'input_size': self.input,
                        'output_size': self.output,
+                       'epochs': self.epochs,
+                       'alignmentint': self.alignmentint,
+                       'ensemble': self.ensemble
                        }
         params_df = pd.DataFrame([params_dict])
         params_file = self.save_data_dir / "simulation_parameters.csv"
