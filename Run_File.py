@@ -13,7 +13,8 @@ import networkx as nx
 from collections import deque
 import seaborn as sns
 from pathlib import Path
-
+import h5py
+import ast
 from Plotter import Plotter
 from Trial_Recorders_Model import MultiLayerNet, Trial
 from DataProcessing import DataHandler
@@ -90,7 +91,7 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type = float, help='Determines the learning rate for the model', default = 0.01)
     parser.add_argument('--Epochs',type=int, help='Determines the number of training epochs', default = 10000)
     parser.add_argument('--STD',type=float, help='Determines the standard deviation (width) of the normal distribution for the hidden layers weights', default = 0.2)
-    parser.add_argument('--EnsembleNum', type = int, help= ' Determines the number of models to create for the purposes of ensemble averages', default= 10)
+    parser.add_argument('--EnsembleNum', type = int, help= ' Determines the number of models to create for the purposes of ensemble averages', default= 20)
     parser.add_argument('--Performances', type = int, help='Determines the number of printouts of model performance desired', default=4)
     parser.add_argument('--Bootstraps', type= int, help='Determines the number of bootstraps to calculate for error propagation', default=100)
     parser.add_argument('--AlignmentInterval', type = int, help='Determines how frequently to calculate the NTK alignment', default=10)
@@ -125,36 +126,65 @@ if __name__ == "__main__":
         early_cutoff=1.0, mid_cutoff=10.0
     )
 
-    # model = MultiLayerNet(args.InputSize, args.Depth, args.Width,args.OutputSize,args.STD,args.Activation)
+
+
+
+    model = MultiLayerNet(args.InputSize, args.Depth, args.Width,args.OutputSize,args.STD,args.Activation)
     model_fn = lambda: MultiLayerNet(args.InputSize, args.Depth, args.Width, args.OutputSize, args.STD, args.Activation).double()
     Trial_run = Trial(model_fn, args.InputSize, args.OutputSize,args.Width,args.Depth,args.lr,args.Epochs,args.STD,args.EnsembleNum,
-                     args.AlignmentInterval,X_train_sorted,Y_train_sorted,X_eval,Y_eval,args.EvalAmount,performances_array, lr_factor= 5)
-    
+                     args.AlignmentInterval,X_train_sorted,Y_train_sorted,X_eval,Y_eval,args.EvalAmount,performances_array,output_directory)
+    Trial_run.save_initial_params(seed=1)
     Trial_run.train_ensemble()
 
-    # print(f"Dimensionality of plateau bounds is {Trial_run.plateau_recorder.plateau_bounds.shape}")
-    # print(Trial_run.plateau_recorder.plateau_bounds)
+
+    read_file = Path(output_directory)/"run_data.h5"
+    param_file = Path(output_directory)/"simulation_parameters.csv"
+    with h5py.File(name = read_file, mode = 'r') as f:
+        saved_loss = np.array(f["loss/loss_dataset"])
+        last_saved_performance = np.array(f["performance/performance_dataset"][:,-1,:])
+        f.close()
+
+    params_df = pd.read_csv(param_file)
+    epochs = params_df["epochs"][0]
+
+    epoch_axis = np.arange(epochs)
+    
+    lr = params_df["lr"]
+    ensemble = params_df["ensemble"][0]
+    test_true = params_df["test_truth"].apply(ast.literal_eval)[0]
+    test_input = params_df["test_input"].apply(ast.literal_eval)[0]
+    train_x = params_df["train_input"].apply(ast.literal_eval)[0]
+    train_y = params_df["train_truth"].apply(ast.literal_eval)[0]
+    #Plot loss test
+
+    loss_avg = saved_loss.mean(axis = 0)
+    loss_uncert = saved_loss.std(axis =0)/np.sqrt(ensemble)
+    fig, ax = plt.subplots(figsize = (10,6))
+    ax.plot(epoch_axis , loss_avg)
+    for i in range(saved_loss.shape[0]):
+         ax.plot(epoch_axis , saved_loss[i,:], linestyle = 'dashed', alpha =0.5)
+    ax.fill_between(epoch_axis , loss_avg+loss_uncert, loss_avg-loss_uncert, alpha = 0.3)
+    ax.set_xlabel("Epochs") 
+    ax.set_ylabel("Loss")
+    ax.set_title("Replica and Ensemble loss vs Epochs")
+    plt.savefig(f"{Path(output_directory)}/Loss_test.png")
+    plt.close()
+
+    #Plotting last performance
+    avg_perf = last_saved_performance.mean(axis = 0)
+    perf_uncert = last_saved_performance.std(axis =0)/np.sqrt(ensemble)
+    fig, ax = plt.subplots(figsize = (10,6))
+    ax.plot(test_input, test_true, label = "True", linestyle = '-')
+    ax.plot(test_input,avg_perf, label = "Model Output")
+    ax.fill_between(test_input,avg_perf+perf_uncert,avg_perf-perf_uncert, alpha = 0.3)
+    ax.scatter(train_x,train_y, label = "training points")
+    plt.savefig(f"{Path(output_directory)}/LastPerformance.png")
 
 
-    Data = DataHandler(Trial_run,args.Bootstraps,args.EvalAmount, args.PhiTarget, output_directory)
-
-    Data.compute_eigen_quant()
-    Data.compute_eigvals_zero()
-    Data.compute_ensemble_evec_rotation()
-
-    Data.replica_TOI_helper(sort=True)
-
-    Data.compute_TOI_evec_alignment(num_evals=5, sort=True)
-    Data.compute_ensemble_timesOI()
-    Data.compute_ensAVG_evec_alignment_TOI(num_evals=5, sort=True)
-
-    Data.save_data()
 
 
 
-    Plots = Plotter(Data,Trial_run,regions_list,performances_array,args.SaveFig,output_directory,args.ShowFig, args.Nodesize, args.Edgesize)
 
-    Plots.plot_ensemble_losses()
-    # Plots.plot_evec3_plateau_rotation(target_eval=1)
-    Plots.plot_evec_overlap_TOI(num_times=3, num_evals=5)
-    Plots.plot_ensembleAVG_evec_overlap_TOI(num_times=3, num_evals=5)
+
+    
+    
