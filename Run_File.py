@@ -89,7 +89,7 @@ if __name__ == "__main__":
     'the initial data mapped onto when going from initial --> HiddenLayer1', default = 10)
     parser.add_argument('--Depth', type = int, help='Defines how many hidden layers we want', default = 3)
     parser.add_argument('--lr', type = float, help='Determines the learning rate for the model', default = 0.01)
-    parser.add_argument('--Epochs',type=int, help='Determines the number of training epochs', default = 10000)
+    parser.add_argument('--Epochs',type=int, help='Determines the number of training epochs', default = 20000)
     parser.add_argument('--STD',type=float, help='Determines the standard deviation (width) of the normal distribution for the hidden layers weights', default = 0.2)
     parser.add_argument('--EnsembleNum', type = int, help= ' Determines the number of models to create for the purposes of ensemble averages', default= 20)
     parser.add_argument('--Performances', type = int, help='Determines the number of printouts of model performance desired', default=4)
@@ -167,6 +167,7 @@ if __name__ == "__main__":
     ax.set_xlabel("Epochs") 
     ax.set_ylabel("Loss")
     ax.set_title("Replica and Ensemble loss vs Epochs")
+    ax.legend()
     plt.savefig(f"{Path(output_directory)}/Loss_test.png")
     plt.close()
 
@@ -178,6 +179,7 @@ if __name__ == "__main__":
     ax.plot(test_input,avg_perf, label = "Model Output")
     ax.fill_between(test_input,avg_perf+perf_uncert,avg_perf-perf_uncert, alpha = 0.3)
     ax.scatter(train_x,train_y, label = "training points")
+    ax.legend()
     plt.savefig(f"{Path(output_directory)}/LastPerformance.png")
 
 
